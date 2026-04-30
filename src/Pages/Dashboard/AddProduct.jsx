@@ -4,6 +4,7 @@ import { collection, addDoc, serverTimestamp, onSnapshot, query } from 'firebase
 import { db, auth } from '../../lib/firebase';
 import { addLog } from '../../lib/firebase-logs';
 import { pushNotification, sendCrudNotification } from '../../lib/notifications';
+import { syncProductToStore } from '../../lib/inkandemotion-sync';
 import { Html5Qrcode } from 'html5-qrcode';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { BarcodeFormat, DecodeHintType, NotFoundException } from '@zxing/library';
@@ -676,6 +677,23 @@ export default function AddProduct() {
         createdBy: auth.currentUser.uid,
         lastUpdatedBy: auth.currentUser.uid
       });
+
+      // Queue product for InkandEmotion sync
+      try {
+        await syncProductToStore({
+          productId: normalizedProductId,
+          barcode: normalizedBarcode,
+          name: name.trim(),
+          category: category.trim(),
+          quantity: qtyNum,
+          purchasePrice: priceNum,
+          sellingPrice: sellNum,
+          warehouse: warehouse.trim(),
+          vendorName: formData.vendorName.trim()
+        });
+      } catch (syncErr) {
+        console.warn('Product sync queued (may be delayed):', syncErr);
+      }
 
       // Log the action
       addLog('ADD PRODUCT', name.trim(), qtyNum);

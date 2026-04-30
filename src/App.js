@@ -8,6 +8,8 @@ import ActivityLogs from "./Pages/Dashboard/ActivityLogs";
 import Warehouses from "./Pages/Dashboard/Warehouses";
 import POS from "./Pages/Dashboard/POS";
 import SalesHistory from "./Pages/Dashboard/SalesHistory";
+import EcommerceOrders from "./Pages/Dashboard/OnlineOrders";
+import StoreSync from "./Pages/Dashboard/StoreSync";
 import ProtectedRoute from "./Components/ProtectedRoute";
 import ChatbotWidget from "./Components/ui/ChatbotWidget";
 
@@ -66,10 +68,26 @@ function App() {
           }
         />
         <Route
+          path="/dashboard/orders"
+          element={
+            <ProtectedRoute>
+              <EcommerceOrders />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/dashboard/logs"
           element={
             <ProtectedRoute>
               <ActivityLogs />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/dashboard/store-sync"
+          element={
+            <ProtectedRoute>
+              <StoreSync />
             </ProtectedRoute>
           }
         />

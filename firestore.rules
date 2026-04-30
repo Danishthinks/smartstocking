@@ -74,6 +74,11 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    match /ecommerceOrders/{orderId} {
+      allow read, update: if isSignedIn();
+      allow create, delete: if false;
+    }
+
     match /warehouses/{warehouseId} {
       allow read, write: if isSignedIn();
     }

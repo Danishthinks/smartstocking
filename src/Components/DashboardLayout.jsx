@@ -5,7 +5,7 @@ import { signOut } from 'firebase/auth';
 import { auth, db } from '../lib/firebase';
 import ThemeToggle from './ui/ThemeToggle';
 import { collection, limit, onSnapshot, query } from 'firebase/firestore';
-import { LayoutDashboard, PlusCircle, Package, FileText, Warehouse, Search, X, ShoppingCart, ReceiptText } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, Package, FileText, Warehouse, Search, X, ShoppingCart, ReceiptText, Settings } from 'lucide-react';
 
 export default function DashboardLayout({ children }) {
   const { currentUser } = useAuth();
@@ -69,12 +69,28 @@ export default function DashboardLayout({ children }) {
         keywords: ['sales', 'history', 'transactions', 'orders']
       },
       {
+        id: 'page-online-orders',
+        label: 'Ecommerce Orders',
+        description: 'Manage online store orders and fulfillment',
+        path: '/dashboard/orders',
+        type: 'Page',
+        keywords: ['ecommerce', 'online orders', 'storefront', 'shop']
+      },
+      {
         id: 'page-logs',
         label: 'Activity Logs',
         description: 'Track product and warehouse actions',
         path: '/dashboard/logs',
         type: 'Page',
         keywords: ['logs', 'activity', 'history', 'audit']
+      },
+      {
+        id: 'page-store-sync',
+        label: 'Store Integration',
+        description: 'Sync with InkandEmotion store',
+        path: '/dashboard/store-sync',
+        type: 'Page',
+        keywords: ['store', 'sync', 'integration', 'ecommerce', 'products', 'inventory']
       },
       {
         id: 'action-export-inventory',
@@ -107,6 +123,14 @@ export default function DashboardLayout({ children }) {
         path: '/dashboard/sales-history',
         type: 'Action',
         keywords: ['sales', 'history', 'transactions', 'report']
+      },
+      {
+        id: 'action-manage-online-orders',
+        label: 'Manage Ecommerce Orders',
+        description: 'Open online order queue and update fulfillment',
+        path: '/dashboard/orders',
+        type: 'Action',
+        keywords: ['orders', 'ecommerce', 'online', 'fulfillment']
       }
     ],
     []
@@ -532,6 +556,74 @@ export default function DashboardLayout({ children }) {
         >
           <ReceiptText size={18} />
           Sales History
+        </Link>
+
+        <Link
+          to="/dashboard/orders"
+          className="nav-link"
+          style={{
+            padding: '12px',
+            borderRadius: '8px',
+            color: isActive('/dashboard/orders') ? '#fff' : '#d1d5db',
+            textDecoration: 'none',
+            fontSize: '15px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            transition: '0.2s',
+            backgroundColor: isActive('/dashboard/orders') ? 'rgba(255,255,255,0.12)' : 'transparent'
+          }}
+          onMouseEnter={(e) => {
+            if (!isActive('/dashboard/orders')) {
+              e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.12)';
+              e.currentTarget.style.color = '#fff';
+              e.currentTarget.style.transform = 'translateX(3px)';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!isActive('/dashboard/orders')) {
+              e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.color = '#d1d5db';
+              e.currentTarget.style.transform = 'translateX(0)';
+            }
+          }}
+        >
+          <ShoppingCart size={18} />
+          Ecommerce Orders
+        </Link>
+
+        <Link
+          to="/dashboard/store-sync"
+          className="nav-link"
+          style={{
+            padding: '12px',
+            borderRadius: '8px',
+            color: isActive('/dashboard/store-sync') ? '#fff' : '#d1d5db',
+            textDecoration: 'none',
+            fontSize: '15px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            transition: '0.2s',
+            backgroundColor: isActive('/dashboard/store-sync') ? 'rgba(255,255,255,0.12)' : 'transparent'
+          }}
+          onMouseEnter={(e) => {
+            if (!isActive('/dashboard/store-sync')) {
+              e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.12)';
+              e.currentTarget.style.color = '#fff';
+              e.currentTarget.style.transform = 'translateX(3px)';
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!isActive('/dashboard/store-sync')) {
+              e.currentTarget.style.backgroundColor = 'transparent';
+              e.currentTarget.style.color = '#d1d5db';
+              e.currentTarget.style.transform = 'translateX(0)';
+            }
+          }}
+        >
+          <Settings size={18} />
+          Store Sync
         </Link>
 
         {/* User info and logout */}
