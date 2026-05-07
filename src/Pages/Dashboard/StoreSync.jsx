@@ -1,121 +1,134 @@
 import React, { useState, useEffect } from 'react';
 import DashboardLayout from '../../Components/DashboardLayout';
-import { collection, query, getDocs, doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { db, auth } from '../../lib/firebase';
-import { configureStoreConnection, getStoreConnectionStatus, getSyncQueueStatus, syncAllProducts } from '../../lib/inkandemotion-sync';
-import { Settings, Link as LinkIcon, CheckCircle, AlertCircle, RefreshCw } from 'lucide-react';
+import { collection, query, getDocs, addDoc, onSnapshot, orderBy, limit, where } from 'firebase/firestore';
+import { db } from '../../lib/firebase';
 
 export default function StoreSync() {
-  const [storeConfig, setStoreConfig] = useState({
-    storeName: 'inkandemotion.store',
-    storeUrl: '',
-    apiKey: '',
-    webhookUrl: ''
-  });
-
-  const [connectionStatus, setConnectionStatus] = useState({
-    connected: false,
-    storeName: null,
-    lastSyncAt: null
-  });
-
-  const [syncStatus, setSyncStatus] = useState({
-    productSyncPending: 0,
-    inventorySyncPending: 0,
-    orderStatusSyncPending: 0,
-    totalPending: 0
-  });
-
+  const [recentOrders, setRecentOrders] = useState([]);
+  const [productCount, setProductCount] = useState(0);
+  const [storeProductCount, setStoreProductCount] = useState(0);
+  
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+  const [testOrderLoading, setTestOrderLoading] = useState(false);
   const [message, setMessage] = useState({ text: '', type: '' });
 
   useEffect(() => {
-    loadStatus();
-    const interval = setInterval(loadStatus, 5000); // Refresh every 5 seconds
-    return () => clearInterval(interval);
+    loadData();
+    
+    // Real-time listener for recent orders from store
+    const q = query(
+      collection(db, 'ecommerceOrders'),
+      orderBy('createdAt', 'desc'),
+      limit(10)
+    );
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const orders = [];
+      snapshot.forEach((doc) => {
+        orders.push({ id: doc.id, ...doc.data() });
+      });
+      setRecentOrders(orders);
+    }, (error) => {
+      console.error('Error listening to orders:', error);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  const loadStatus = async () => {
+  const loadData = async () => {
     try {
-      const status = await getStoreConnectionStatus();
-      setConnectionStatus(status);
+      // Count total products in SmartStock
+      const smartstockProducts = await getDocs(
+        query(collection(db, 'products'), where('source', '==', 'smartstock'))
+      );
+      setProductCount(smartstockProducts.size);
 
-      const syncStats = await getSyncQueueStatus();
-      setSyncStatus(syncStats);
+      // Count products available on store
+      const storeProducts = await getDocs(
+        query(collection(db, 'products'), where('showOnStore', '==', true))
+      );
+      setStoreProductCount(storeProducts.size);
 
       setLoading(false);
     } catch (error) {
-      console.error('Error loading status:', error);
+      console.error('Error loading data:', error);
       setLoading(false);
     }
   };
 
-  const handleConfigChange = (e) => {
-    const { name, value } = e.target;
-    setStoreConfig(prev => ({
-      ...prev,
-      [name]: value
-    }));
-  };
-
-  const handleSaveConnection = async () => {
-    if (!storeConfig.storeUrl.trim()) {
-      showMessage('Store URL is required', 'error');
-      return;
-    }
-
-    setSaving(true);
+  const handleCreateTestOrder = async () => {
+    setTestOrderLoading(true);
     try {
-      const configRef = doc(db, 'storeSyncConfig', 'config');
-      await setDoc(configRef, {
-        ...storeConfig,
-        status: 'connected',
-        lastSyncAt: serverTimestamp(),
-        configuredBy: auth.currentUser?.email,
-        configuredAt: serverTimestamp()
-      }, { merge: true });
+      // Get some products to create test order items
+      const productsSnapshot = await getDocs(
+        query(collection(db, 'products'), where('showOnStore', '==', true), limit(3))
+      );
 
-      showMessage('Store connection configured successfully!', 'success');
-      loadStatus();
+      if (productsSnapshot.empty) {
+        showMessage('⚠️ No products available to create test order. Add products first!', 'warning');
+        setTestOrderLoading(false);
+        return;
+      }
+
+      // Create test order items from available products
+      const orderItems = productsSnapshot.docs.map((doc) => {
+        const product = doc.data();
+        return {
+          productId: product.productId,
+          name: product.name,
+          price: product.sellingPrice,
+          quantity: 1,
+          total: product.sellingPrice
+        };
+      });
+
+      const testOrder = {
+        orderNumber: `TEST-${Date.now()}`,
+        customerName: 'Test Customer',
+        customerEmail: 'test@inkandemotion.store',
+        customerPhone: '+92 300 1234567',
+        deliveryAddress: 'Test Address, Karachi, Pakistan',
+        items: orderItems,
+        subtotal: orderItems.reduce((sum, item) => sum + item.total, 0),
+        shippingCost: 0,
+        tax: 0,
+        totalAmount: orderItems.reduce((sum, item) => sum + item.total, 0),
+        paymentMethod: 'Test Payment',
+        paymentStatus: 'pending',
+        orderStatus: 'pending',
+        createdAt: new Date(),
+        createdBy: 'storefront',
+        source: 'inkandemotion.store',
+        processed: false,
+        inventoryApplied: false
+      };
+
+      const docRef = await addDoc(collection(db, 'ecommerceOrders'), testOrder);
+      
+      showMessage(
+        `✅ Test order created! Order ID: ${docRef.id}. Check the ecommerce page to see it.`,
+        'success'
+      );
+      
+      setTimeout(() => loadData(), 500);
     } catch (error) {
-      console.error('Error saving config:', error);
-      showMessage('Error saving configuration: ' + error.message, 'error');
+      console.error('Error creating test order:', error);
+      showMessage('❌ Error: ' + error.message, 'error');
     } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleSyncAllProducts = async () => {
-    if (!connectionStatus.connected) {
-      showMessage('Please connect to store first', 'warning');
-      return;
-    }
-
-    setSyncing(true);
-    try {
-      const result = await syncAllProducts();
-      showMessage(`Successfully queued ${result.syncedCount} products for sync!`, 'success');
-      setTimeout(loadStatus, 1000);
-    } catch (error) {
-      console.error('Error syncing products:', error);
-      showMessage('Error syncing products: ' + error.message, 'error');
-    } finally {
-      setSyncing(false);
+      setTestOrderLoading(false);
     }
   };
 
   const showMessage = (text, type = 'info') => {
     setMessage({ text, type });
-    setTimeout(() => setMessage({ text: '', type: '' }), 4000);
+    setTimeout(() => setMessage({ text: '', type: '' }), 5000);
   };
 
   if (loading) {
     return (
       <DashboardLayout>
-        <div className="flex items-center justify-center h-64">
-          <div className="text-gray-500">Loading...</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '300px' }}>
+          <div style={{ color: '#64748b' }}>Loading store data...</div>
         </div>
       </DashboardLayout>
     );
@@ -123,189 +136,277 @@ export default function StoreSync() {
 
   return (
     <DashboardLayout>
-      <div className="max-w-4xl mx-auto p-6">
-        <div className="mb-8">
-          <div className="flex items-center gap-3 mb-2">
-            <Settings className="w-8 h-8 text-blue-600" />
-            <h1 className="text-3xl font-bold text-gray-900">Store Integration</h1>
-          </div>
-          <p className="text-gray-600">Manage InkandEmotion store connection and sync products</p>
+      <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+        {/* Header */}
+        <div style={{ marginBottom: '30px' }}>
+          <h1 style={{ fontSize: '28px', fontWeight: 700, color: 'var(--text-dark)', marginBottom: '8px' }}>
+            🎨 InkandEmotion Store Sync
+          </h1>
+          <p style={{ fontSize: '14px', color: '#64748b' }}>
+            Shared Firestore Database • Manage store integration and test orders
+          </p>
         </div>
 
         {/* Message Alert */}
         {message.text && (
-          <div className={`mb-6 p-4 rounded-lg ${
-            message.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' :
-            message.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' :
-            message.type === 'warning' ? 'bg-yellow-50 text-yellow-800 border border-yellow-200' :
-            'bg-blue-50 text-blue-800 border border-blue-200'
-          }`}>
+          <div
+            style={{
+              marginBottom: '20px',
+              padding: '12px 16px',
+              borderRadius: '6px',
+              backgroundColor:
+                message.type === 'error'
+                  ? '#fee2e2'
+                  : message.type === 'success'
+                    ? '#dcfce7'
+                    : '#fef08a',
+              color:
+                message.type === 'error'
+                  ? '#991b1b'
+                  : message.type === 'success'
+                    ? '#166534'
+                    : '#92400e',
+              fontSize: '13px',
+              fontWeight: 600,
+              border: `1px solid ${
+                message.type === 'error'
+                  ? '#fca5a5'
+                  : message.type === 'success'
+                    ? '#86efac'
+                    : '#fde047'
+              }`
+            }}
+          >
             {message.text}
           </div>
         )}
 
         {/* Connection Status Card */}
-        <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <div className="flex items-start justify-between mb-6">
+        <div
+          style={{
+            backgroundColor: 'var(--card)',
+            padding: '20px',
+            borderRadius: '12px',
+            boxShadow: '0 4px 10px rgba(0,0,0,0.08)',
+            marginBottom: '20px',
+            borderLeft: '4px solid #10b981'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
             <div>
-              <h2 className="text-xl font-semibold text-gray-900 mb-2">Connection Status</h2>
-              <div className="flex items-center gap-2">
-                {connectionStatus.connected ? (
-                  <>
-                    <CheckCircle className="w-5 h-5 text-green-600" />
-                    <span className="text-green-700 font-medium">Connected</span>
-                  </>
-                ) : (
-                  <>
-                    <AlertCircle className="w-5 h-5 text-yellow-600" />
-                    <span className="text-yellow-700 font-medium">Not Connected</span>
-                  </>
-                )}
-              </div>
+              <h2 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-dark)', marginBottom: '8px' }}>
+                ✅ Connection Status
+              </h2>
+              <p style={{ fontSize: '14px', color: '#64748b' }}>
+                <strong>Store:</strong> inkandemotion.store
+              </p>
+              <p style={{ fontSize: '13px', color: '#64748b', marginTop: '4px' }}>
+                <strong>Database:</strong> Shared Firestore
+              </p>
+              <p style={{ fontSize: '14px', color: '#10b981', fontWeight: 600, marginTop: '4px' }}>
+                ● Connected & Ready
+              </p>
             </div>
-            {connectionStatus.lastSyncAt && (
-              <div className="text-right">
-                <div className="text-sm text-gray-600">Last synced</div>
-                <div className="text-sm font-medium text-gray-900">
-                  {new Date(connectionStatus.lastSyncAt).toLocaleString()}
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
-        {/* Configuration Form */}
-        <div className="bg-white rounded-lg shadow p-6 mb-6">
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">Store Configuration</h2>
-
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Store Name
-              </label>
-              <input
-                type="text"
-                name="storeName"
-                value={storeConfig.storeName}
-                onChange={handleConfigChange}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="inkandemotion.store"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Store URL *
-              </label>
-              <input
-                type="url"
-                name="storeUrl"
-                value={storeConfig.storeUrl}
-                onChange={handleConfigChange}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="https://inkandemotion.com"
-              />
-              <p className="text-sm text-gray-500 mt-1">The URL of your InkandEmotion store</p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                API Key
-              </label>
-              <input
-                type="password"
-                name="apiKey"
-                value={storeConfig.apiKey}
-                onChange={handleConfigChange}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Your InkandEmotion API key"
-              />
-              <p className="text-sm text-gray-500 mt-1">Find this in your InkandEmotion settings</p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Webhook URL
-              </label>
-              <input
-                type="url"
-                name="webhookUrl"
-                value={storeConfig.webhookUrl}
-                onChange={handleConfigChange}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="https://inkandemotion.com/webhook"
-              />
-              <p className="text-sm text-gray-500 mt-1">Where SmartStock will send sync updates</p>
-            </div>
-
-            <button
-              onClick={handleSaveConnection}
-              disabled={saving}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-medium py-2 px-4 rounded-lg transition"
-            >
-              {saving ? 'Saving...' : 'Save Configuration'}
-            </button>
-          </div>
-        </div>
-
-        {/* Sync Actions */}
-        {connectionStatus.connected && (
-          <div className="bg-white rounded-lg shadow p-6 mb-6">
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">Sync Actions</h2>
-
-            <button
-              onClick={handleSyncAllProducts}
-              disabled={syncing}
-              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-medium py-2 px-4 rounded-lg transition"
-            >
-              <RefreshCw className="w-4 h-4" />
-              {syncing ? 'Syncing Products...' : 'Sync All Products to Store'}
-            </button>
-            <p className="text-sm text-gray-600 mt-2">
-              Queue all products from SmartStock to sync with InkandEmotion
+        {/* Quick Stats */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '16px', marginBottom: '20px' }}>
+          <div
+            style={{
+              backgroundColor: 'var(--card)',
+              padding: '20px',
+              borderRadius: '12px',
+              boxShadow: '0 4px 10px rgba(0,0,0,0.08)',
+              borderTop: '3px solid #3b82f6'
+            }}
+          >
+            <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '8px', textTransform: 'uppercase', fontWeight: 600 }}>
+              SmartStock Products
             </p>
-          </div>
-        )}
-
-        {/* Sync Queue Status */}
-        <div className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">Sync Queue Status</h2>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="bg-blue-50 rounded-lg p-4">
-              <div className="text-2xl font-bold text-blue-600">{syncStatus.productSyncPending}</div>
-              <div className="text-sm text-gray-600">Products Pending</div>
-            </div>
-
-            <div className="bg-purple-50 rounded-lg p-4">
-              <div className="text-2xl font-bold text-purple-600">{syncStatus.inventorySyncPending}</div>
-              <div className="text-sm text-gray-600">Inventory Updates</div>
-            </div>
-
-            <div className="bg-orange-50 rounded-lg p-4">
-              <div className="text-2xl font-bold text-orange-600">{syncStatus.orderStatusSyncPending}</div>
-              <div className="text-sm text-gray-600">Order Status</div>
-            </div>
-
-            <div className="bg-green-50 rounded-lg p-4">
-              <div className="text-2xl font-bold text-green-600">{syncStatus.totalPending}</div>
-              <div className="text-sm text-gray-600">Total Pending</div>
-            </div>
+            <p style={{ fontSize: '28px', fontWeight: 700, color: '#3b82f6' }}>{productCount}</p>
+            <p style={{ fontSize: '12px', color: '#64748b', marginTop: '8px' }}>Total in inventory</p>
           </div>
 
-          <p className="text-sm text-gray-600 mt-4">
-            These items are queued and will be synced to InkandEmotion. The status updates automatically every 5 seconds.
+          <div
+            style={{
+              backgroundColor: 'var(--card)',
+              padding: '20px',
+              borderRadius: '12px',
+              boxShadow: '0 4px 10px rgba(0,0,0,0.08)',
+              borderTop: '3px solid #8b5cf6'
+            }}
+          >
+            <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '8px', textTransform: 'uppercase', fontWeight: 600 }}>
+              Store Catalog
+            </p>
+            <p style={{ fontSize: '28px', fontWeight: 700, color: '#8b5cf6' }}>{storeProductCount}</p>
+            <p style={{ fontSize: '12px', color: '#64748b', marginTop: '8px' }}>Visible on store</p>
+          </div>
+
+          <div
+            style={{
+              backgroundColor: 'var(--card)',
+              padding: '20px',
+              borderRadius: '12px',
+              boxShadow: '0 4px 10px rgba(0,0,0,0.08)',
+              borderTop: '3px solid #ef4444'
+            }}
+          >
+            <p style={{ fontSize: '12px', color: '#64748b', marginBottom: '8px', textTransform: 'uppercase', fontWeight: 600 }}>
+              Recent Orders
+            </p>
+            <p style={{ fontSize: '28px', fontWeight: 700, color: '#ef4444' }}>{recentOrders.length}</p>
+            <p style={{ fontSize: '12px', color: '#64748b', marginTop: '8px' }}>Latest from store</p>
+          </div>
+        </div>
+
+        {/* Test Order Section */}
+        <div
+          style={{
+            backgroundColor: 'var(--card)',
+            padding: '20px',
+            borderRadius: '12px',
+            boxShadow: '0 4px 10px rgba(0,0,0,0.08)',
+            marginBottom: '20px'
+          }}
+        >
+          <h2 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-dark)', marginBottom: '12px' }}>
+            🧪 Test Order Generator
+          </h2>
+          <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '16px' }}>
+            Create a test order to verify the order flow. It will appear instantly in the ecommerce page.
           </p>
+          <button
+            onClick={handleCreateTestOrder}
+            disabled={testOrderLoading || storeProductCount === 0}
+            style={{
+              padding: '10px 20px',
+              borderRadius: '6px',
+              border: 'none',
+              background: storeProductCount === 0 ? '#cbd5e1' : 'linear-gradient(135deg, #f59e0b, #f97316)',
+              color: '#fff',
+              fontSize: '14px',
+              fontWeight: 600,
+              cursor: storeProductCount === 0 ? 'not-allowed' : 'pointer',
+              opacity: testOrderLoading ? 0.7 : 1,
+              transition: 'all 0.2s'
+            }}
+          >
+            {testOrderLoading ? '⏳ Creating Test Order...' : '➕ Generate Test Order'}
+          </button>
+          {storeProductCount === 0 && (
+            <p style={{ fontSize: '12px', color: '#ef4444', marginTop: '8px', fontWeight: 600 }}>
+              ⚠️ Add products to store first (set showOnStore = true)
+            </p>
+          )}
+        </div>
+
+        {/* Recent Orders */}
+        <div
+          style={{
+            backgroundColor: 'var(--card)',
+            padding: '20px',
+            borderRadius: '12px',
+            boxShadow: '0 4px 10px rgba(0,0,0,0.08)',
+            marginBottom: '20px'
+          }}
+        >
+          <h2 style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-dark)', marginBottom: '16px' }}>
+            📋 Recent Store Orders
+          </h2>
+
+          {recentOrders.length === 0 ? (
+            <p style={{ fontSize: '13px', color: '#64748b', padding: '20px', textAlign: 'center' }}>
+              No orders yet. Click "Generate Test Order" to create one!
+            </p>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontSize: '13px'
+                }}
+              >
+                <thead>
+                  <tr style={{ borderBottom: '2px solid #e2e8f0' }}>
+                    <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600, color: '#64748b' }}>Order ID</th>
+                    <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600, color: '#64748b' }}>Customer</th>
+                    <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600, color: '#64748b' }}>Items</th>
+                    <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600, color: '#64748b' }}>Total</th>
+                    <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600, color: '#64748b' }}>Status</th>
+                    <th style={{ padding: '12px', textAlign: 'left', fontWeight: 600, color: '#64748b' }}>Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentOrders.map((order) => (
+                    <tr key={order.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                      <td style={{ padding: '12px', color: 'var(--text-dark)', fontWeight: 600 }}>
+                        {order.orderNumber || order.id.substring(0, 8)}
+                      </td>
+                      <td style={{ padding: '12px', color: 'var(--text-dark)' }}>
+                        {order.customerName}
+                      </td>
+                      <td style={{ padding: '12px', color: 'var(--text-dark)' }}>
+                        {Array.isArray(order.items) ? order.items.length : 0}
+                      </td>
+                      <td style={{ padding: '12px', color: 'var(--text-dark)', fontWeight: 600 }}>
+                        Rs. {order.totalAmount?.toLocaleString() || 0}
+                      </td>
+                      <td style={{ padding: '12px' }}>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            fontWeight: 600,
+                            backgroundColor:
+                              order.orderStatus === 'completed'
+                                ? '#dcfce7'
+                                : order.orderStatus === 'shipped'
+                                  ? '#dbeafe'
+                                  : '#fef08a',
+                            color:
+                              order.orderStatus === 'completed'
+                                ? '#166534'
+                                : order.orderStatus === 'shipped'
+                                  ? '#0c4a6e'
+                                  : '#92400e'
+                          }}
+                        >
+                          {order.orderStatus || 'pending'}
+                        </span>
+                      </td>
+                      <td style={{ padding: '12px', color: '#64748b', fontSize: '12px' }}>
+                        {order.createdAt?.toDate?.().toLocaleDateString?.() ||
+                          (typeof order.createdAt === 'number' 
+                            ? new Date(order.createdAt).toLocaleDateString()
+                            : new Date().toLocaleDateString())}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         {/* Info Section */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 mt-6">
-          <h3 className="text-lg font-semibold text-blue-900 mb-2">How it works</h3>
-          <ul className="space-y-2 text-blue-800 text-sm">
+        <div style={{
+          backgroundColor: '#dbeafe',
+          border: '1px solid #7dd3fc',
+          borderRadius: '6px',
+          padding: '16px',
+          marginTop: '20px'
+        }}>
+          <h3 style={{ fontSize: '15px', fontWeight: 600, color: '#0c4a6e', marginBottom: '8px' }}>How it works</h3>
+          <ul style={{ fontSize: '13px', color: '#0c4a6e', lineHeight: '1.6' }}>
             <li>✓ <strong>Products:</strong> Add products in SmartStock, they sync automatically to InkandEmotion</li>
             <li>✓ <strong>Inventory:</strong> Stock changes are synced in real-time</li>
-            <li>✓ <strong>Orders:</strong> Customers order on InkandEmotion, orders appear in SmartStock automatically</li>
-            <li>✓ <strong>Status:</strong> Update order status in SmartStock, it syncs back to InkandEmotion</li>
+            <li>✓ <strong>Orders:</strong> Orders created here or on the storefront appear instantly</li>
+            <li>✓ <strong>Auto Deduction:</strong> When orders are processed, inventory is automatically deducted</li>
           </ul>
         </div>
       </div>
