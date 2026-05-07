@@ -32,11 +32,13 @@ const ZXING_FORMATS = [
 ];
 
 export default function AddProduct() {
+  const [addMode, setAddMode] = useState('smartstock'); // 'smartstock' or 'inkandemotion'
   const [formData, setFormData] = useState({
     productId: '',
     barcode: '',
     name: '',
     category: '',
+    description: '',
     ptaStatus: '',
     quantity: '',
     purchasePrice: '',
@@ -50,6 +52,7 @@ export default function AddProduct() {
   const [message, setMessage] = useState({ text: '', type: '' });
   const [warehouses, setWarehouses] = useState([]);
   const [products, setProducts] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [isScannerStarting, setIsScannerStarting] = useState(false);
   const [isFetchingBarcodeDetails, setIsFetchingBarcodeDetails] = useState(false);
@@ -178,6 +181,29 @@ export default function AddProduct() {
       },
       (error) => {
         console.error('Error loading products:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    // Fetch existing categories for InkandEmotion mode
+    if (!db) return;
+
+    const productsQuery = query(collection(db, 'products'));
+    const unsubscribe = onSnapshot(
+      productsQuery,
+      (snapshot) => {
+        const cats = new Set();
+        snapshot.forEach((doc) => {
+          const cat = doc.data().category;
+          if (cat) cats.add(cat);
+        });
+        setCategories(Array.from(cats).sort());
+      },
+      (error) => {
+        console.error('Error loading categories:', error);
       }
     );
 
@@ -705,17 +731,121 @@ export default function AddProduct() {
     e.preventDefault();
     setMessage({ text: '', type: '' });
 
-    const { productId, barcode, name, category, quantity, purchasePrice, sellingPrice, warehouse } = formData;
-    const ptaStatus = String(formData.ptaStatus || '').trim();
-    const normalizedBarcode = barcode.trim();
-    const normalizedProductId = productId.trim() || `AUTO-${normalizedBarcode}`;
-
     // Check if there are pending image uploads
     const hasPendingUploads = uploadedImages.some((img) => !img.url && !img.error);
     if (hasPendingUploads) {
       showMessage('⚠️ Please wait for all images to finish uploading, or remove pending images.', 'warning');
       return;
     }
+
+    if (!db) {
+      showMessage('❌ Database not initialized. Please refresh the page.', 'error');
+      return;
+    }
+
+    // InkandEmotion Mode
+    if (addMode === 'inkandemotion') {
+      const { name, category, sellingPrice, quantity } = formData;
+      
+      // Validate inputs
+      if (!name.trim() || !category.trim() || !sellingPrice || !quantity) {
+        showMessage('⚠️ Please fill all required fields', 'warning');
+        return;
+      }
+
+      const sellNum = round2(sellingPrice);
+      const qtyNum = Number(quantity);
+
+      if (sellNum <= 0) {
+        showMessage('⚠️ Price must be greater than 0', 'warning');
+        return;
+      }
+
+      if (qtyNum < 0 || !Number.isInteger(qtyNum)) {
+        showMessage('⚠️ Quantity must be a positive whole number', 'warning');
+        return;
+      }
+
+      setIsLoading(true);
+      showMessage('Adding product to store...', 'warning');
+
+      try {
+        // Get uploaded image URLs
+        const uploadedImageUrls = uploadedImages
+          .filter((img) => img.url)
+          .map((img) => img.url);
+
+        let storefrontImageUrl = String(formData.imageUrl || '').trim();
+        if (!storefrontImageUrl && uploadedImageUrls.length > 0) {
+          storefrontImageUrl = uploadedImageUrls[0];
+        }
+        if (!storefrontImageUrl) {
+          storefrontImageUrl = `https://placehold.co/800x600?text=${encodeURIComponent(name.trim())}`;
+        }
+
+        const productId = `STORE-${Date.now()}`;
+
+        const productPayload = {
+          productId,
+          name: name.trim(),
+          category: category.trim(),
+          description: String(formData.description || '').trim(),
+          imageUrl: storefrontImageUrl,
+          images: uploadedImageUrls.length > 0 ? uploadedImageUrls : [],
+          sellingPrice: sellNum,
+          quantity: qtyNum,
+          createdAt: serverTimestamp(),
+          createdBy: auth.currentUser.uid,
+          source: 'inkandemotion.store',
+          showOnStore: true
+        };
+
+        await addDoc(collection(db, 'products'), productPayload);
+
+        addLog('ADD STORE PRODUCT', name.trim(), qtyNum);
+        pushNotification('Store product added', {
+          body: `${name.trim()} (Qty: ${qtyNum}) was added to store.`
+        });
+        sendCrudNotification({
+          title: 'Store product added',
+          body: `${name.trim()} (Qty: ${qtyNum}) was added to store.`
+        });
+
+        showMessage('✅ Product Added to Store Successfully', 'success');
+        
+        // Reset form
+        setFormData({
+          productId: '',
+          barcode: '',
+          name: '',
+          category: '',
+          description: '',
+          imageUrl: '',
+          ptaStatus: '',
+          quantity: '',
+          purchasePrice: '',
+          sellingPrice: '',
+          warehouse: '',
+          vendorName: '',
+          vendorEmail: '',
+          threshold: 5
+        });
+        uploadedImages.forEach((img) => URL.revokeObjectURL(img.preview));
+        setUploadedImages([]);
+      } catch (err) {
+        console.error('Error adding store product:', err);
+        showMessage('❌ Error: ' + (err.message || 'Failed to add product'), 'error');
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    // SmartStock Mode (Original logic)
+    const { productId, barcode, name, category, quantity, purchasePrice, sellingPrice, warehouse } = formData;
+    const ptaStatus = String(formData.ptaStatus || '').trim();
+    const normalizedBarcode = barcode.trim();
+    const normalizedProductId = productId.trim() || `AUTO-${normalizedBarcode}`;
 
     // Validate inputs
     if (!name.trim() || !category.trim() || !quantity || !purchasePrice || !sellingPrice || !warehouse) {
@@ -767,11 +897,6 @@ export default function AddProduct() {
     }
     if (sellNum <= priceNum) {
       showMessage('⚠️ Selling price should be higher than purchase price', 'warning');
-      return;
-    }
-
-    if (!db) {
-      showMessage('❌ Database not initialized. Please refresh the page.', 'error');
       return;
     }
 
@@ -841,6 +966,7 @@ export default function AddProduct() {
         name: '',
         category: '',
         imageUrl: '',
+        description: '',
         ptaStatus: '',
         quantity: '',
         purchasePrice: '',
@@ -873,6 +999,44 @@ export default function AddProduct() {
         Add New Product
       </div>
 
+      {/* Mode Selection */}
+      <div style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
+        <button
+          type="button"
+          onClick={() => setAddMode('smartstock')}
+          style={{
+            padding: '10px 16px',
+            borderRadius: '6px',
+            border: 'none',
+            background: addMode === 'smartstock' ? 'var(--primary)' : '#e2e8f0',
+            color: addMode === 'smartstock' ? '#fff' : 'var(--text-dark)',
+            fontSize: '14px',
+            fontWeight: 600,
+            cursor: 'pointer',
+            transition: 'all 0.2s'
+          }}
+        >
+          📦 SmartStock
+        </button>
+        <button
+          type="button"
+          onClick={() => setAddMode('inkandemotion')}
+          style={{
+            padding: '10px 16px',
+            borderRadius: '6px',
+            border: 'none',
+            background: addMode === 'inkandemotion' ? 'var(--primary)' : '#e2e8f0',
+            color: addMode === 'inkandemotion' ? '#fff' : 'var(--text-dark)',
+            fontSize: '14px',
+            fontWeight: 600,
+            cursor: 'pointer',
+            transition: 'all 0.2s'
+          }}
+        >
+          🎨 InkandEmotion Store
+        </button>
+      </div>
+
       <div
         style={{
           backgroundColor: 'var(--card)',
@@ -884,56 +1048,58 @@ export default function AddProduct() {
       >
         <div id={IMAGE_SCANNER_ELEMENT_ID} style={{ display: 'none' }} />
         <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: '15px' }}>
-            <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
-              Product ID
-            </label>
-            <input
-              type="text"
-              name="productId"
-              placeholder="e.g. PROD-001"
-              maxLength="50"
-              value={formData.productId}
-              onChange={handleChange}
-              style={{
-                width: '100%',
-                padding: '10px',
-                border: '1px solid #ccc',
-                borderRadius: '6px',
-                marginTop: '5px',
-                fontSize: '14px',
-                backgroundColor: 'var(--card)',
-                color: 'var(--text-dark)'
-              }}
-            />
-          </div>
+          {addMode === 'smartstock' && (
+            <>
+              <div style={{ marginBottom: '15px' }}>
+                <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
+                  Product ID
+                </label>
+                <input
+                  type="text"
+                  name="productId"
+                  placeholder="e.g. PROD-001"
+                  maxLength="50"
+                  value={formData.productId}
+                  onChange={handleChange}
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    border: '1px solid #ccc',
+                    borderRadius: '6px',
+                    marginTop: '5px',
+                    fontSize: '14px',
+                    backgroundColor: 'var(--card)',
+                    color: 'var(--text-dark)'
+                  }}
+                />
+              </div>
 
-          <div style={{ marginBottom: '15px' }}>
-            <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
-              Barcode
-            </label>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <input
-                type="text"
-                name="barcode"
-                placeholder="Scan with camera or type barcode"
-                maxLength="120"
-                value={formData.barcode}
-                onChange={handleChange}
-                onBlur={() => {
-                  const value = String(formData.barcode || '').trim();
-                  if (value) {
-                    fetchProductDetailsFromBarcode(value);
-                  }
-                }}
-                style={{
-                  flex: 1,
-                  padding: '10px',
-                  border: '1px solid #ccc',
-                  borderRadius: '6px',
-                  marginTop: '5px',
-                  fontSize: '14px',
-                  backgroundColor: 'var(--card)',
+              <div style={{ marginBottom: '15px' }}>
+                <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
+                  Barcode
+                </label>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <input
+                    type="text"
+                    name="barcode"
+                    placeholder="Scan with camera or type barcode"
+                    maxLength="120"
+                    value={formData.barcode}
+                    onChange={handleChange}
+                    onBlur={() => {
+                      const value = String(formData.barcode || '').trim();
+                      if (value) {
+                        fetchProductDetailsFromBarcode(value);
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '10px',
+                      border: '1px solid #ccc',
+                      borderRadius: '6px',
+                      marginTop: '5px',
+                      fontSize: '14px',
+                      backgroundColor: 'var(--card)',
                   color: 'var(--text-dark)'
                 }}
               />
@@ -1051,7 +1217,9 @@ export default function AddProduct() {
                 </small>
               </div>
             )}
-          </div>
+              </div>
+            </>
+          )}
 
           <div style={{ marginBottom: '15px' }}>
             <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
@@ -1375,38 +1543,73 @@ export default function AddProduct() {
             />
           </div>
 
-          <div style={{ marginBottom: '15px' }}>
-            <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
-              Purchase Price
-            </label>
-            <input
-              type="number"
-              name="purchasePrice"
-              placeholder="e.g. 20000"
-              min="0"
-              step="0.01"
-              value={formData.purchasePrice}
-              onChange={handleChange}
-              style={{
-                width: '100%',
-                padding: '10px',
-                border: '1px solid #ccc',
-                borderRadius: '6px',
-                marginTop: '5px',
-                fontSize: '14px',
-                backgroundColor: 'var(--card)',
-                color: 'var(--text-dark)'
-              }}
-            />
-          </div>
+          {addMode === 'inkandemotion' && (
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
+                📝 Product Description
+              </label>
+              <textarea
+                name="description"
+                placeholder="Describe your product (e.g., handmade sketch, custom design, materials used)"
+                maxLength="500"
+                value={formData.description}
+                onChange={handleChange}
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  border: '1px solid #ccc',
+                  borderRadius: '6px',
+                  marginTop: '5px',
+                  fontSize: '14px',
+                  backgroundColor: 'var(--card)',
+                  color: 'var(--text-dark)',
+                  minHeight: '80px',
+                  fontFamily: 'inherit',
+                  resize: 'vertical'
+                }}
+              />
+              <small style={{ color: '#64748b', display: 'block', marginTop: '4px' }}>
+                {String(formData.description || '').length}/500 characters
+              </small>
+            </div>
+          )}
+
+          {addMode === 'smartstock' && (
+            <div style={{ marginBottom: '15px' }}>
+              <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
+                Purchase Price
+              </label>
+              <input
+                type="number"
+                name="purchasePrice"
+                placeholder="e.g. 20000"
+                min="0"
+                step="0.01"
+                value={formData.purchasePrice}
+                onChange={handleChange}
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  border: '1px solid #ccc',
+                  borderRadius: '6px',
+                  marginTop: '5px',
+                  fontSize: '14px',
+                  backgroundColor: 'var(--card)',
+                  color: 'var(--text-dark)'
+                }}
+              />
+            </div>
+          )}
 
           <div style={{ marginBottom: '15px' }}>
             <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
               Selling Price
             </label>
-            <small style={{ color: '#64748b', display: 'block', marginBottom: '6px', lineHeight: 1.4 }}>
-              Smart Pricing suggests the best price based on demand and competitor pricing so you can earn more while staying competitive.
-            </small>
+            {addMode === 'smartstock' && (
+              <small style={{ color: '#64748b', display: 'block', marginBottom: '6px', lineHeight: 1.4 }}>
+                Smart Pricing suggests the best price based on demand and competitor pricing so you can earn more while staying competitive.
+              </small>
+            )}
             <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch' }}>
               <input
                 type="number"
@@ -1427,28 +1630,30 @@ export default function AddProduct() {
                   color: 'var(--text-dark)'
                 }}
               />
-              <button
-                type="button"
-                onClick={handleSuggestPrice}
-                disabled={isLoading || isSuggestingPrice || !String(formData.name || '').trim() || !String(formData.category || '').trim() || !String(formData.purchasePrice || '').trim()}
-                style={{
-                  marginTop: '5px',
-                  padding: '10px 12px',
-                  borderRadius: '6px',
-                  border: '1px solid #f59e0b',
-                  background: 'linear-gradient(135deg, #f59e0b, #f97316)',
-                  color: '#fff',
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  cursor: isLoading || isSuggestingPrice || !String(formData.name || '').trim() || !String(formData.category || '').trim() || !String(formData.purchasePrice || '').trim() ? 'not-allowed' : 'pointer',
-                  opacity: isLoading || isSuggestingPrice || !String(formData.name || '').trim() || !String(formData.category || '').trim() || !String(formData.purchasePrice || '').trim() ? 0.7 : 1,
-                  whiteSpace: 'nowrap'
-                }}
-              >
-                {isSuggestingPrice ? '✨ Thinking...' : '✨ Auto-Price'}
-              </button>
+              {addMode === 'smartstock' && (
+                <button
+                  type="button"
+                  onClick={handleSuggestPrice}
+                  disabled={isLoading || isSuggestingPrice || !String(formData.name || '').trim() || !String(formData.category || '').trim() || !String(formData.purchasePrice || '').trim()}
+                  style={{
+                    marginTop: '5px',
+                    padding: '10px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #f59e0b',
+                    background: 'linear-gradient(135deg, #f59e0b, #f97316)',
+                    color: '#fff',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    cursor: isLoading || isSuggestingPrice || !String(formData.name || '').trim() || !String(formData.category || '').trim() || !String(formData.purchasePrice || '').trim() ? 'not-allowed' : 'pointer',
+                    opacity: isLoading || isSuggestingPrice || !String(formData.name || '').trim() || !String(formData.category || '').trim() || !String(formData.purchasePrice || '').trim() ? 0.7 : 1,
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {isSuggestingPrice ? '✨ Thinking...' : '✨ Auto-Price'}
+                </button>
+              )}
             </div>
-            {priceSuggestion && (
+            {priceSuggestion && addMode === 'smartstock' && (
               <div style={{ display: 'block', marginTop: '6px', color: '#0f172a', lineHeight: 1.45, fontSize: '12px' }}>
                 <div style={{ fontWeight: 700 }}>
                   Best price: {priceSuggestion.price} PKR
@@ -1480,77 +1685,79 @@ export default function AddProduct() {
             )}
           </div>
 
-          <div style={{ marginBottom: '15px' }}>
-            <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
-              Warehouse *
-            </label>
-            <select
-              name="warehouse"
-              value={formData.warehouse}
-              onChange={handleChange}
-              style={{
-                width: '100%',
-                padding: '10px',
-                border: '1px solid #ccc',
-                borderRadius: '6px',
-                marginTop: '5px',
-                fontSize: '14px',
-                backgroundColor: 'var(--card)',
-                color: 'var(--text-dark)'
-              }}
-            >
-              <option value="">Select a warehouse</option>
-              {warehouses.map((w) => (
-                <option key={w.id} value={w.name}>{w.name}</option>
-              ))}
-            </select>
-            {warehouses.length === 0 && (
-              <small style={{ color: '#ef4444', display: 'block', marginTop: '5px' }}>
-                📍 No warehouses found. Create one in Warehouses section first.
-              </small>
-            )}
-          </div>
+          {addMode === 'smartstock' && (
+            <>
+              <div style={{ marginBottom: '15px' }}>
+                <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
+                  Warehouse *
+                </label>
+                <select
+                  name="warehouse"
+                  value={formData.warehouse}
+                  onChange={handleChange}
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    border: '1px solid #ccc',
+                    borderRadius: '6px',
+                    marginTop: '5px',
+                    fontSize: '14px',
+                    backgroundColor: 'var(--card)',
+                    color: 'var(--text-dark)'
+                  }}
+                >
+                  <option value="">Select a warehouse</option>
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.name}>{w.name}</option>
+                  ))}
+                </select>
+                {warehouses.length === 0 && (
+                  <small style={{ color: '#ef4444', display: 'block', marginTop: '5px' }}>
+                    📍 No warehouses found. Create one in Warehouses section first.
+                  </small>
+                )}
+              </div>
 
-          <div style={{ marginBottom: '0', paddingTop: '10px', borderTop: '1px solid #e5e7eb' }}>
-            <div style={{ fontSize: '13px', fontWeight: 600, color: '#6b7280', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Vendor Info (optional)
-            </div>
-          </div>
+              <div style={{ marginBottom: '0', paddingTop: '10px', borderTop: '1px solid #e5e7eb' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, color: '#6b7280', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  Vendor Info (optional)
+                </div>
+              </div>
 
-          <div style={{ marginBottom: '15px' }}>
-            <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
-              Vendor Name
-            </label>
-            <input
-              type="text"
-              name="vendorName"
-              placeholder="e.g. Ali Traders"
-              maxLength="100"
-              value={formData.vendorName}
-              onChange={handleChange}
-              style={{
-                width: '100%',
-                padding: '10px',
-                border: '1px solid #ccc',
-                borderRadius: '6px',
-                marginTop: '5px',
-                fontSize: '14px',
-                backgroundColor: 'var(--card)',
-                color: 'var(--text-dark)'
-              }}
-            />
-          </div>
+              <div style={{ marginBottom: '15px' }}>
+                <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
+                  Vendor Name
+                </label>
+                <input
+                  type="text"
+                  name="vendorName"
+                  placeholder="e.g. Ali Traders"
+                  maxLength="100"
+                  value={formData.vendorName}
+                  onChange={handleChange}
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    border: '1px solid #ccc',
+                    borderRadius: '6px',
+                    marginTop: '5px',
+                    fontSize: '14px',
+                    backgroundColor: 'var(--card)',
+                    color: 'var(--text-dark)'
+                  }}
+                />
+              </div>
 
-          <div style={{ marginBottom: '15px' }}>
-            <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
-              Vendor Email
-              <span style={{ fontSize: '11px', fontWeight: 400, color: '#6b7280', marginLeft: '6px' }}>auto-emailed when stock goes low</span>
-            </label>
-            <input
-              type="email"
-              name="vendorEmail"
-              placeholder="e.g. vendor@example.com"
-              maxLength="150"
+              <div style={{ marginBottom: '15px' }}>
+                <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
+                  Vendor Email
+                  <span style={{ fontSize: '11px', fontWeight: 400, color: '#6b7280', marginLeft: '6px' }}>auto-emailed when stock goes low</span>
+                </label>
+                <input
+                  type="email"
+                  name="vendorEmail"
+                  placeholder="e.g. vendor@example.com"
+                  maxLength="150"
               value={formData.vendorEmail}
               onChange={handleChange}
               style={{
@@ -1597,6 +1804,8 @@ export default function AddProduct() {
               }}
             />
           </div>
+            </>
+          )}
 
           <button
             type="submit"
@@ -1613,7 +1822,7 @@ export default function AddProduct() {
               opacity: isLoading ? 0.7 : 1
             }}
           >
-            {isLoading ? 'Adding Product...' : 'Add Product'}
+            {isLoading ? (addMode === 'smartstock' ? 'Adding Product...' : 'Adding to Store...') : (addMode === 'smartstock' ? '✨ Add Product' : '✨ Add Store Product')}
           </button>
 
           {message.text && (
