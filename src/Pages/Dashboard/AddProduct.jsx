@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import DashboardLayout from '../../Components/DashboardLayout';
 import { collection, addDoc, serverTimestamp, onSnapshot, query } from 'firebase/firestore';
-import { db, auth } from '../../lib/firebase';
+import { db, auth, storage } from '../../lib/firebase';
+import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
 import { addLog } from '../../lib/firebase-logs';
 import { pushNotification, sendCrudNotification } from '../../lib/notifications';
 import { syncProductToStore } from '../../lib/inkandemotion-sync';
@@ -56,6 +57,8 @@ export default function AddProduct() {
   const [priceSuggestion, setPriceSuggestion] = useState(null);
   const [scannerStatus, setScannerStatus] = useState('Scanner off.');
   const [imageScanName, setImageScanName] = useState('');
+  const [uploadedImages, setUploadedImages] = useState([]); 
+  const [isUploadingImages, setIsUploadingImages] = useState(false);
   const scannerRef = useRef(null);
   const lastScanRef = useRef({ value: '', at: 0 });
 
@@ -367,6 +370,115 @@ export default function AddProduct() {
     setScannerStatus('Scanner off.');
   };
 
+  const handleSelectImages = (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+
+    if (files.length === 0) return;
+
+    const newImages = files.map((file) => ({
+      file,
+      preview: URL.createObjectURL(file),
+      url: null,
+      uploading: false,
+      uploadProgress: 0,
+      error: null
+    }));
+
+    setUploadedImages((prev) => [...prev, ...newImages]);
+  };
+
+  const uploadProductImages = async () => {
+    if (uploadedImages.length === 0) {
+      showMessage('Please select images first', 'warning');
+      return;
+    }
+
+    const pendingImages = uploadedImages.filter((img) => !img.url && !img.uploading);
+    if (pendingImages.length === 0) {
+      showMessage('All images have been uploaded', 'info');
+      return;
+    }
+
+    setIsUploadingImages(true);
+
+    const uploadPromises = pendingImages.map((imageData, index) => {
+      return new Promise((resolve) => {
+        const file = imageData.file;
+        const timestamp = Date.now();
+        const fileName = `${timestamp}-${index}-${file.name}`;
+        const storageRef = ref(storage, `product-images/${fileName}`);
+
+        const uploadTask = uploadBytesResumable(storageRef, file);
+
+        uploadTask.on(
+          'state_changed',
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            setUploadedImages((prev) =>
+              prev.map((img) =>
+                img.file === file
+                  ? { ...img, uploading: true, uploadProgress: progress }
+                  : img
+              )
+            );
+          },
+          (error) => {
+            console.error('Image upload error:', error);
+            setUploadedImages((prev) =>
+              prev.map((img) =>
+                img.file === file
+                  ? { ...img, uploading: false, error: error.message }
+                  : img
+              )
+            );
+            showMessage(`Failed to upload ${file.name}`, 'error');
+            resolve();
+          },
+          async () => {
+            try {
+              const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+              setUploadedImages((prev) =>
+                prev.map((img) =>
+                  img.file === file
+                    ? { ...img, url: downloadUrl, uploading: false }
+                    : img
+                )
+              );
+            } catch (error) {
+              console.error('Failed to get download URL:', error);
+              setUploadedImages((prev) =>
+                prev.map((img) =>
+                  img.file === file
+                    ? { ...img, uploading: false, error: 'Failed to get URL' }
+                    : img
+                )
+              );
+            }
+            resolve();
+          }
+        );
+      });
+    });
+
+    await Promise.all(uploadPromises);
+    setIsUploadingImages(false);
+    showMessage('Images uploaded successfully!', 'success');
+  };
+
+  const removeImage = async (imageData) => {
+    if (imageData.url) {
+      try {
+        const fileRef = ref(storage, imageData.url);
+        await deleteObject(fileRef);
+      } catch (error) {
+        console.error('Error deleting image:', error);
+      }
+    }
+    URL.revokeObjectURL(imageData.preview);
+    setUploadedImages((prev) => prev.filter((img) => img !== imageData));
+  };
+
   const showMessage = (text, type = 'error') => {
     setMessage({ text, type });
     setTimeout(() => setMessage({ text: '', type: '' }), 5000);
@@ -598,6 +710,13 @@ export default function AddProduct() {
     const normalizedBarcode = barcode.trim();
     const normalizedProductId = productId.trim() || `AUTO-${normalizedBarcode}`;
 
+    // Check if there are pending image uploads
+    const hasPendingUploads = uploadedImages.some((img) => !img.url && !img.error);
+    if (hasPendingUploads) {
+      showMessage('⚠️ Please wait for all images to finish uploading, or remove pending images.', 'warning');
+      return;
+    }
+
     // Validate inputs
     if (!name.trim() || !category.trim() || !quantity || !purchasePrice || !sellingPrice || !warehouse) {
       showMessage('⚠️ Please fill all fields', 'warning');
@@ -660,11 +779,26 @@ export default function AddProduct() {
     showMessage('Adding product...', 'warning');
 
     try {
-      await addDoc(collection(db, 'products'), {
+      // Get uploaded image URLs or use form imageUrl or placeholder
+      const uploadedImageUrls = uploadedImages
+        .filter((img) => img.url)
+        .map((img) => img.url);
+
+      let storefrontImageUrl = String(formData.imageUrl || '').trim();
+      if (!storefrontImageUrl && uploadedImageUrls.length > 0) {
+        storefrontImageUrl = uploadedImageUrls[0];
+      }
+      if (!storefrontImageUrl) {
+        storefrontImageUrl = `https://placehold.co/800x600?text=${encodeURIComponent(name.trim() || normalizedProductId)}`;
+      }
+
+      const productPayload = {
         productId: normalizedProductId,
         barcode: normalizedBarcode,
         name: name.trim(),
         category: category.trim(),
+        imageUrl: storefrontImageUrl,
+        images: uploadedImageUrls.length > 0 ? uploadedImageUrls : [],
         quantity: qtyNum,
         purchasePrice: priceNum,
         sellingPrice: sellNum,
@@ -675,20 +809,16 @@ export default function AddProduct() {
         threshold: Number(formData.threshold) > 0 ? Number(formData.threshold) : 5,
         createdAt: serverTimestamp(),
         createdBy: auth.currentUser.uid,
-        lastUpdatedBy: auth.currentUser.uid
-      });
+        lastUpdatedBy: auth.currentUser.uid,
+        source: 'smartstock',
+        showOnStore: true
+      };
+
+      await addDoc(collection(db, 'products'), productPayload);
 
       // Queue product for InkandEmotion sync
       try {
-        await syncProductToStore({
-          productId: normalizedProductId,
-          barcode: normalizedBarcode,
-          name: name.trim(),
-          category: category.trim(),
-          quantity: qtyNum,
-          purchasePrice: priceNum,
-          sellingPrice: sellNum,
-          warehouse: warehouse.trim(),
+        await syncProductToStore(productPayload);
           vendorName: formData.vendorName.trim()
         });
       } catch (syncErr) {
@@ -712,6 +842,7 @@ export default function AddProduct() {
         barcode: '',
         name: '',
         category: '',
+        imageUrl: '',
         ptaStatus: '',
         quantity: '',
         purchasePrice: '',
@@ -721,6 +852,9 @@ export default function AddProduct() {
         vendorEmail: '',
         threshold: 5
       });
+      // Clear uploaded images
+      uploadedImages.forEach((img) => URL.revokeObjectURL(img.preview));
+      setUploadedImages([]);
     } catch (err) {
       console.error('Error adding product:', err);
       showMessage('❌ Error: ' + (err.message || 'Failed to add product'), 'error');
@@ -967,6 +1101,228 @@ export default function AddProduct() {
                 color: 'var(--text-dark)'
               }}
             />
+          </div>
+
+          <div style={{ marginBottom: '15px' }}>
+            <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
+              Gallery Image URL
+            </label>
+            <input
+              type="url"
+              name="imageUrl"
+              placeholder="Optional, used by InkandEmotion gallery"
+              maxLength="300"
+              value={formData.imageUrl}
+              onChange={handleChange}
+              style={{
+                width: '100%',
+                padding: '10px',
+                border: '1px solid #ccc',
+                borderRadius: '6px',
+                marginTop: '5px',
+                fontSize: '14px',
+                backgroundColor: 'var(--card)',
+                color: 'var(--text-dark)'
+              }}
+            />
+            <small style={{ color: '#64748b', display: 'block', marginTop: '6px' }}>
+              If you leave this blank, SmartStock will use a placeholder image so the product is still visible in the gallery.
+            </small>
+          </div>
+
+          <div style={{ marginBottom: '15px' }}>
+            <label style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-dark)', display: 'block', marginBottom: '5px' }}>
+              📸 Product Images (Multiple)
+            </label>
+            <small style={{ color: '#64748b', display: 'block', marginBottom: '8px' }}>
+              Upload multiple high-quality product images. They will be stored and displayed in the gallery.
+            </small>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+              <input
+                id="product-images-input"
+                type="file"
+                multiple
+                accept="image/*"
+                onChange={handleSelectImages}
+                disabled={isLoading || isUploadingImages}
+                style={{ display: 'none' }}
+              />
+              <button
+                type="button"
+                onClick={() => document.getElementById('product-images-input')?.click()}
+                disabled={isLoading || isUploadingImages}
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '6px',
+                  border: '2px solid #3b82f6',
+                  background: '#fff',
+                  color: '#3b82f6',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  cursor: isLoading || isUploadingImages ? 'not-allowed' : 'pointer',
+                  opacity: isLoading || isUploadingImages ? 0.65 : 1,
+                  transition: 'all 0.2s'
+                }}
+              >
+                📁 Select Images
+              </button>
+              {uploadedImages.some((img) => !img.url && !img.uploading) && (
+                <button
+                  type="button"
+                  onClick={uploadProductImages}
+                  disabled={isLoading || isUploadingImages}
+                  style={{
+                    padding: '10px 14px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+                    color: '#fff',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: isLoading || isUploadingImages ? 'not-allowed' : 'pointer',
+                    opacity: isLoading || isUploadingImages ? 0.65 : 1,
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  {isUploadingImages ? '⏳ Uploading...' : '☁️ Upload to Cloud'}
+                </button>
+              )}
+            </div>
+
+            {uploadedImages.length > 0 && (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))',
+                  gap: '8px',
+                  marginTop: '8px',
+                  padding: '8px',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: '6px',
+                  background: '#f8fafc'
+                }}
+              >
+                {uploadedImages.map((imgData, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      position: 'relative',
+                      aspectRatio: '1',
+                      borderRadius: '6px',
+                      overflow: 'hidden',
+                      background: '#fff',
+                      border: '1px solid #e2e8f0'
+                    }}
+                  >
+                    <img
+                      src={imgData.preview}
+                      alt={`Preview ${idx}`}
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover'
+                      }}
+                    />
+                    {imgData.uploading && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          background: 'rgba(0, 0, 0, 0.6)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#fff',
+                          fontSize: '12px',
+                          fontWeight: 600
+                        }}
+                      >
+                        {Math.round(imgData.uploadProgress)}%
+                      </div>
+                    )}
+                    {imgData.url && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '4px',
+                          right: '4px',
+                          background: '#10b981',
+                          color: '#fff',
+                          borderRadius: '50%',
+                          width: '20px',
+                          height: '20px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '12px',
+                          fontWeight: 700
+                        }}
+                      >
+                        ✓
+                      </div>
+                    )}
+                    {imgData.error && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          background: 'rgba(220, 38, 38, 0.9)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#fff',
+                          fontSize: '10px',
+                          fontWeight: 600,
+                          padding: '4px',
+                          textAlign: 'center'
+                        }}
+                      >
+                        Error
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removeImage(imgData)}
+                      disabled={isLoading || isUploadingImages}
+                      style={{
+                        position: 'absolute',
+                        bottom: '4px',
+                        left: '4px',
+                        background: 'rgba(0, 0, 0, 0.7)',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: '50%',
+                        width: '24px',
+                        height: '24px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '14px',
+                        cursor: isLoading || isUploadingImages ? 'not-allowed' : 'pointer',
+                        opacity: isLoading || isUploadingImages ? 0.5 : 0.8,
+                        transition: 'opacity 0.2s'
+                      }}
+                      title="Remove image"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <small style={{ color: '#64748b', display: 'block', marginTop: '8px' }}>
+              {uploadedImages.length > 0 && (
+                <>
+                  {uploadedImages.filter((img) => img.url).length} of {uploadedImages.length} images uploaded
+                </>
+              )}
+            </small>
           </div>
 
           {String(formData.category || '').trim().toLowerCase().includes('mobile') && (
