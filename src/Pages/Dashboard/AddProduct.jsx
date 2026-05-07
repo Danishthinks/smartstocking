@@ -819,8 +819,6 @@ export default function AddProduct() {
       // Queue product for InkandEmotion sync
       try {
         await syncProductToStore(productPayload);
-          vendorName: formData.vendorName.trim()
-        });
       } catch (syncErr) {
         console.warn('Product sync queued (may be delayed):', syncErr);
       }
