@@ -343,16 +343,28 @@ export default function StoreSync() {
                   {recentOrders.map((order) => (
                     <tr key={order.id} style={{ borderBottom: '1px solid #e2e8f0' }}>
                       <td style={{ padding: '12px', color: 'var(--text-dark)', fontWeight: 600 }}>
-                        {order.orderNumber || order.id.substring(0, 8)}
+                        {order.orderNumber || order.orderId || order.id.substring(0, 8)}
                       </td>
                       <td style={{ padding: '12px', color: 'var(--text-dark)' }}>
-                        {order.customerName}
+                        <div style={{ fontWeight: 600 }}>
+                          {order.customer?.name || order.customerName || '--'}
+                        </div>
+                        <div style={{ color: '#64748b', fontSize: '12px' }}>
+                          {order.customer?.email || order.customerEmail || '--'}
+                        </div>
                       </td>
                       <td style={{ padding: '12px', color: 'var(--text-dark)' }}>
-                        {Array.isArray(order.items) ? order.items.length : 0}
+                        {(Array.isArray(order.items) ? order.items : []).slice(0, 2).map((item, index) => (
+                          <div key={`${order.id}-item-${index}`} style={{ marginBottom: '2px' }}>
+                            {item.productName || item.name || '-'} x{Number(item.quantity || item.quantitySold || 0)}
+                          </div>
+                        ))}
+                        {Array.isArray(order.items) && order.items.length > 2 && (
+                          <div style={{ color: '#64748b' }}>+{order.items.length - 2} more item(s)</div>
+                        )}
                       </td>
                       <td style={{ padding: '12px', color: 'var(--text-dark)', fontWeight: 600 }}>
-                        Rs. {order.totalAmount?.toLocaleString() || 0}
+                        Rs. {(Number(order.totalAmount ?? order.grandTotal ?? order.salePrice ?? 0)).toLocaleString()}
                       </td>
                       <td style={{ padding: '12px' }}>
                         <span

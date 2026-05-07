@@ -284,10 +284,12 @@ async function createEcommerceOrder(payload) {
 
     const orderData = {
       orderId: orderNumber,
+      orderNumber,
       source: sourceUrl,
       storeName,
       sourceUrl,
       status: paymentStatus === "paid" ? "confirmed" : "processing",
+      orderStatus: paymentStatus === "paid" ? "confirmed" : "processing",
       paymentMethod,
       paymentStatus,
       customer: {
@@ -295,6 +297,9 @@ async function createEcommerceOrder(payload) {
         email: String(customer.email || "").trim(),
         phone: String(customer.phone || "").trim()
       },
+      customerName: String(customer.name || "").trim(),
+      customerEmail: String(customer.email || "").trim(),
+      customerPhone: String(customer.phone || "").trim(),
       shippingAddress: {
         line1: String(shippingAddress.line1 || shippingAddress.address1 || "").trim(),
         line2: String(shippingAddress.line2 || shippingAddress.address2 || "").trim(),
@@ -308,6 +313,7 @@ async function createEcommerceOrder(payload) {
       shippingFee: Number(shippingFee.toFixed(2)),
       discountTotal: Number(discountTotal.toFixed(2)),
       grandTotal,
+      totalAmount: grandTotal,
       notes,
       integrationLabel: `${storeName} via ${sourceUrl}`,
       externalOrderId: externalOrderId || null,

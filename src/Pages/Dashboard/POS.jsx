@@ -376,6 +376,9 @@ export default function POS() {
         );
         const orderId = `ORD-${Date.now()}`;
         const saleRef = doc(collection(db, 'sales'));
+        const ecommerceOrderRef = doc(collection(db, 'ecommerceOrders'));
+        const customerName = auth?.currentUser?.displayName || auth?.currentUser?.email || 'Walk-in Customer';
+        const customerEmail = auth?.currentUser?.email || '';
 
         transaction.set(saleRef, {
           orderId,
@@ -395,6 +398,47 @@ export default function POS() {
           timestamp: serverTimestamp(),
           soldBy: auth?.currentUser?.uid || null,
           soldByEmail: auth?.currentUser?.email || null
+        });
+
+        transaction.set(ecommerceOrderRef, {
+          orderId,
+          orderNumber: orderId,
+          storeName: 'inkandemotion.store',
+          source: 'inkandemotion.store',
+          sourceUrl: 'inkandemotion.store',
+          status: 'confirmed',
+          orderStatus: 'confirmed',
+          paymentMethod: 'pos',
+          paymentStatus: 'paid',
+          customer: {
+            name: customerName,
+            email: customerEmail,
+            phone: ''
+          },
+          customerName,
+          customerEmail,
+          customerPhone: '',
+          items: validatedItems.map((item) => ({
+            productDocId: item.productDocId,
+            productId: item.productId,
+            productName: item.productName,
+            quantity: item.quantitySold,
+            quantitySold: item.quantitySold,
+            unitPrice: item.unitPrice,
+            salePrice: item.salePrice,
+            total: item.salePrice
+          })),
+          totalQuantity: totalQuantitySold,
+          totalAmount: totalSalePrice,
+          grandTotal: totalSalePrice,
+          subtotal: totalSalePrice,
+          shippingFee: 0,
+          discountTotal: 0,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdBy: 'storefront',
+          inventoryApplied: true,
+          processed: true
         });
 
         return {

@@ -40,11 +40,17 @@ const statusStyle = (status) => {
 
 const normalizeOrder = (docSnap) => {
   const data = docSnap.data() || {};
+  const customer = data.customer || {};
   return {
     id: docSnap.id,
     ...data,
+    customer: {
+      name: customer.name || data.customerName || data.name || '',
+      email: customer.email || data.customerEmail || data.email || '',
+      phone: customer.phone || data.customerPhone || data.phone || ''
+    },
     createdAt: data.createdAt || data.timestamp || null,
-    totalAmount: Number(data.grandTotal ?? data.salePrice ?? 0),
+    totalAmount: Number(data.totalAmount ?? data.grandTotal ?? data.salePrice ?? 0),
     totalQuantity: Number(data.totalQuantity ?? data.items?.reduce((sum, item) => sum + Number(item.quantity || item.quantitySold || 0), 0) ?? 0)
   };
 };
@@ -321,8 +327,9 @@ export default function EcommerceOrders() {
                       {orderDate ? orderDate.toLocaleString() : '--'}
                     </td>
                     <td style={{ padding: '12px', borderBottom: '1px solid #e2e8f0', fontSize: '13px' }}>
-                      <div style={{ fontWeight: 600 }}>{order.customer?.name || '--'}</div>
-                      <div style={{ color: '#64748b' }}>{order.customer?.email || '--'}</div>
+                      <div style={{ fontWeight: 600 }}>{order.customer?.name || order.customerName || '--'}</div>
+                      <div style={{ color: '#64748b' }}>{order.customer?.email || order.customerEmail || '--'}</div>
+                      <div style={{ color: '#64748b' }}>{order.customer?.phone || order.customerPhone || ''}</div>
                     </td>
                     <td style={{ padding: '12px', borderBottom: '1px solid #e2e8f0', fontSize: '13px' }}>
                       <div style={{ fontWeight: 600 }}>{order.storeName || defaultStoreName}</div>
@@ -330,14 +337,17 @@ export default function EcommerceOrders() {
                     </td>
                     <td style={{ padding: '12px', borderBottom: '1px solid #e2e8f0', fontSize: '13px' }}>
                       {items.slice(0, 2).map((item, index) => (
-                        <div key={`${order.id}-item-${index}`} style={{ marginBottom: '2px' }}>
-                          {item.productName || '-'} x{Number(item.quantity || item.quantitySold || 0)}
+                        <div key={`${order.id}-item-${index}`} style={{ marginBottom: '4px' }}>
+                          <div style={{ fontWeight: 600 }}>{item.productName || item.name || '-'}</div>
+                          <div style={{ color: '#64748b' }}>
+                            Qty: {Number(item.quantity || item.quantitySold || 0)} | Unit: {formatCurrency(item.unitPrice || item.price || 0)} | Line: {formatCurrency(item.salePrice || item.total || 0)}
+                          </div>
                         </div>
                       ))}
                       {items.length > 2 && <div style={{ color: '#64748b' }}>+{items.length - 2} more item(s)</div>}
                     </td>
                     <td style={{ padding: '12px', borderBottom: '1px solid #e2e8f0', fontSize: '13px', fontWeight: 600 }}>
-                      {formatCurrency(order.totalAmount)}
+                      {formatCurrency(order.totalAmount ?? order.grandTotal ?? order.salePrice)}
                     </td>
                     <td style={{ padding: '12px', borderBottom: '1px solid #e2e8f0', fontSize: '13px' }}>
                       <div>{String(order.paymentMethod || 'online').toUpperCase()}</div>
